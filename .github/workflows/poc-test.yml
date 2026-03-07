@@ -1,0 +1,20 @@
+name: PoC - Trigger Logging Leak
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions: write-all
+
+jobs:
+  ai-review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Vulnerable AI Reviewer
+        uses: ./.                       # ده يشغل الـ action من نفس الريبو (الفورك)
+        with:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENAI_API_MODEL: gpt-4o
