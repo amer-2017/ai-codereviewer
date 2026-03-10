@@ -65,3 +65,6 @@ export async function getAIResponse(
     throw error;
   }
 }
+
+
+Restore original openaiClient.ts with unsafe logging catch block
