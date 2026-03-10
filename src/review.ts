@@ -1,75 +1,92 @@
 import * as core from "@actions/core";
-import { PRDetails } from "./types";
-import { getAIResponse } from "./openaiClient";  // افتراض أن الاسم هكذا، غيّره إذا كان مختلف
 
-// افتراضيًا نفترض أن هذه هي الدالة الرئيسية في analyzeCode.ts
-export async function analyzeCode(
-  changedFiles: any[], 
-  prDetails: PRDetails
-): Promise<any[]> {  // غيّر الـ return type حسب اللي عندك
+import parseDiff, { Chunk, File } from "parse-diff";
+import minimatch from "minimatch";
+import { PRDetails, GithubComment } from "./types";
+import {
+  getPRDetails,
+  getDiff,
+  getCompareDiff,
+  createReviewComment,
+  hasExistingReview,
+  getEventData,
+} from "./github";
+import { analyzeCode } from "./analyzeCode";
+import { APPROVE_REVIEWS } from "./config";
 
-  core.info("===== ANALYZE CODE FUNCTION STARTED =====");
-  core.info(`analyzeCode called with ${changedFiles?.length || 0} files`);
-  core.info(`PR number: ${prDetails.pull_number || 'unknown'}`);
-  core.info(`PR title: ${prDetails.title || 'no title'}`);
+export async function runReview() {
+  core.info("Starting AI code review process...");
+  const prDetails = await getPRDetails();
+  core.info(JSON.stringify(prDetails, null, 2));
+  const eventData = await getEventData();
+  core.info(`Processing ${eventData.action} event...`);
 
-  if (!changedFiles || changedFiles.length === 0) {
-    core.info("analyzeCode: No files to analyze → forcing dummy call for PoC");
-    
-    // PoC: حتى لو فارغ، نجرب نرسل prompt وهمي عشان نوصل لـ OpenAI
-    const dummyPrompt = "This is a forced test prompt for vulnerability PoC. Please respond with a simple JSON: {\"test\": true}";
-    
-    core.info("analyzeCode: Building dummy prompt for testing");
-    core.info(`Dummy prompt length: ${dummyPrompt.length}`);
-
-    try {
-      core.info("analyzeCode: Calling getAIResponse with dummy prompt");
-      const aiResponse = await getAIResponse(dummyPrompt);
-      core.info("analyzeCode: getAIResponse completed successfully");
-      core.info(`AI response length: ${aiResponse ? JSON.stringify(aiResponse).length : 'empty'}`);
-    } catch (err) {
-      core.error("analyzeCode: Forced dummy call failed");
-      core.error("Error details: " + (err as Error).message);
-      if ((err as any)?.config) {
-        core.error("Forced error config: " + JSON.stringify((err as any).config, null, 2));
-      }
-    }
-
-    // نرجع مصفوفة فارغة عشان ما يوقف الـ workflow
-    return [];
+  let diff: string | null = null;
+  if (eventData.action === "opened" || eventData.action === "synchronize") {
+    diff = await getDiff(
+      prDetails.owner,
+      prDetails.repo,
+      prDetails.pull_number,
+    );
+  } else if (eventData.action === "created") {
+    diff = await getDiff(
+      prDetails.owner,
+      prDetails.repo,
+      prDetails.pull_number,
+    );
+  } else {
+    core.info(`Unsupported event: ${process.env.GITHUB_EVENT_NAME}`);
+    return;
   }
 
-  core.info("analyzeCode: Normal flow - building real prompt from changed files");
+  if (!diff) {
+    core.info("No diff found");
+    return;
+  }
 
-  // هنا الكود الأصلي اللي يبني الـ prompt من changedFiles
-  // (افتراضيًا، استبدل هذا الجزء بالكود الحقيقي عندك)
-  let prompt = "Review the following code changes:\n\n";
-  changedFiles.forEach((file: any) => {
-    prompt += `File: ${file.to || 'unknown'}\n`;
-    prompt += `Changes:\n${file.chunks?.map((c: any) => c.changes?.join('\n') || '').join('\n') || 'no changes'}\n\n`;
+  const changedFiles = parseDiff(diff);
+  core.info(`Found ${changedFiles.length} changed files.`);
+
+  const excludePatterns = core
+    .getInput("exclude")
+    .split(",")
+    .map((s) => s.trim());
+  const filteredDiff = changedFiles.filter((file: any) => {
+    return !excludePatterns.some((pattern) =>
+      minimatch(file.to ?? "", pattern),
+    );
   });
 
-  core.info(`analyzeCode: Final prompt length: ${prompt.length}`);
+  core.info(`After filtering, ${filteredDiff.length} files remain.`);
 
-  core.info("analyzeCode: Calling getAIResponse with real prompt");
-  
-  let aiResponse;
-  try {
-    aiResponse = await getAIResponse(prompt);
-    core.info("analyzeCode: getAIResponse succeeded");
-  } catch (err) {
-    core.error("analyzeCode: getAIResponse failed");
-    core.error("Error: " + (err as Error).message);
-    if ((err as any)?.config) {
-      core.error("Error config object: " + JSON.stringify((err as any).config, null, 2));
-    }
+  const comments = await analyzeCode(filteredDiff, prDetails);
+  if (APPROVE_REVIEWS || comments.length > 0) {
+    await createReviewComment(
+      prDetails.owner,
+      prDetails.repo,
+      prDetails.pull_number,
+      comments,
+    );
+  } else {
+    core.info("No comments to post.");
   }
 
-  // معالجة الرد (افتراضي، غيّره حسب الكود الأصلي)
-  const comments = aiResponse || [];
+  core.info("AI code review process completed successfully.");
+}
 
-  core.info(`analyzeCode: Returning ${comments.length} comments`);
-  core.info("===== ANALYZE CODE FUNCTION FINISHED =====");
+// Helper to fetch PR base/head SHA (if needed)
+async function getDiffDetails(prDetails: PRDetails) {
+  const { owner, repo, pull_number } = prDetails;
+  const { Octokit } = await import("@octokit/rest");
+  const octokit = new Octokit();
+  const prResponse = await octokit.pulls.get({
+    owner,
+    repo,
+    pull_number,
+  });
 
-  return comments;
+  return {
+    baseSha: prResponse.data.base.sha,
+    headSha: prResponse.data.head.sha,
+  };
 }
