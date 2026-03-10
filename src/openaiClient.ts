@@ -45,8 +45,8 @@ export async function getAIResponse(
 
     const res = response.choices[0].message?.content?.trim() || "{}";
     const jsonString = res.replace(/^```json\s*|\s*```$/g, "").trim();
-
     const data = JSON.parse(jsonString);
+
     if (!Array.isArray(data?.comments)) {
       throw new Error("Invalid response from OpenAI API");
     }
@@ -54,17 +54,18 @@ export async function getAIResponse(
     return data.comments;
   } catch (error: any) {
     core.error("Error communicating with OpenAI:", error);
+
     if (error?.response) {
       core.error("Response Data:", error.response.data);
       core.error("Response Status:", error.response.status);
       core.error("Response Headers:", error.response.headers);
     }
+
+    // ← هذا هو الجزء الخطير / unsafe logging الأصلي
     if (error?.config) {
       core.error("Config:", error.config);
     }
+
     throw error;
   }
 }
-
-
-Restore original openaiClient.ts with unsafe logging catch block
